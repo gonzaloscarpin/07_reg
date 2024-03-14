@@ -101,7 +101,15 @@ ggplot(reg_dfw,
        aes(x= sr_ksha,
            y= yield_mgha        
                     ))+
-  geom_boxplot()
+  geom_boxplot()+
+  geom_jitter()
+
+ggplot(reg_dfw,
+       aes(x= factor(sr_ksha),
+           y= yield_mgha        
+                    ))+
+  geom_boxplot()+
+  geom_jitter()
 ```
 
 What is going on with this boxplot?
@@ -207,7 +215,7 @@ ggplot(mod1_int_aug,
   geom_line(aes(y = .fixed),
             size = 3,
             color = "red",
-            alpha = .3)+
+            alpha = .3)
   
   
 ```
@@ -431,7 +439,10 @@ ggplot(reg_dfw,
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod3_quad 
+mod3_quad <- lmer(yield_mgha ~ (1 | rep) + 
+                    sr_ksha + I(sr_ksha^2),
+                  data = reg_dfw
+                  ) 
 
 # Summary
 summary(mod3_quad)
@@ -585,7 +596,22 @@ After that, we can choose the model that best fit our data and use it to extract
 options(contrasts = c("contr.sum", "contr.poly"))
 
 # Model fitting
-mod4_linp 
+mod4_linp <- nlme(yield_mgha ~ SSlinp(sr_ksha, 
+                                      a,
+                                      b,
+                                      xs
+                                      ),
+                  data = reg_dfw,
+                  random = list(rep = pdDiag(a + b + xs ~ 1)),
+                  fixed = list(a ~ 1,
+                               b ~ 1,
+                               xs ~ 1
+                               ),
+                  start = c(a = 0,
+                            b = 0.3,
+                            xs = 100
+                            )
+                    )
 
 # Summary
 summary(mod4_linp)
@@ -629,12 +655,14 @@ Looking good.
 On this plot, looking for normality.
 
 ```{r mod4 QQ plot for Rep random effect}
-mod4_linp_randeff 
+mod4_linp_randeff <- ranef(mod4_linp) %>% 
+  as.data.frame()
 
 ggplot(mod4_linp_randeff, 
        aes(sample = estimate))+
   stat_qq()+
-  stat_qq_line() 
+  stat_qq_line()+
+  facet_wrap(~term)
 
 ```
 b and xs random estimates are so small that seem to be all zero.  
@@ -721,13 +749,38 @@ ggplot(reg_dfw,
 ## a) Visual comparison
 ```{r comparison plot}
 ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
-  geom_point(size = 4, alpha = .6)
+  geom_point(size = 4, alpha = .6)+
+  geom_line(data = nd,
+             aes(y = mod1_yield_mgha),
+             color = "forestgreen",
+             size = 1.5
+             )+
+  geom_line(data = nd,
+             aes(y = mod2_yield_mgha),
+             color = "blue",
+             size = 1.5
+             )+
+  geom_line(data = nd,
+             aes(y = mod3_yield_mgha),
+             color = "purple",
+             size = 1.5
+             )+
+  geom_line(data = nd,
+             aes(y = mod4_yield_mgha),
+             color = "orange",
+             size = 1.5
+             )
+             
 
 
 ```
 ## Table comparison  
 ```{r}
-
+IC_tab(mod1_int,
+       mod2_lin,
+       mod3_quad,
+       mod4_linp
+       )
 ```
 Based on the above, model 4 (linear-plateau) had the lowest AIC and thus should be used to find the optimum level of seeding rate.  
 
@@ -735,15 +788,18 @@ Based on the above, model 4 (linear-plateau) had the lowest AIC and thus should 
 Because our best model was the linear-plateau, let's find its seeding rate that optimized yield.  
 
 ```{r optimum SR}
-
+mod4_linp %>% 
+  intervals(which = "fixed")
 
 ```
 Based on the linear-plateau model, the level of seeding rate to optimize corn grain yield in this study was **73.47** thousand seeds/ha.  
 
 Now let's predict what was the yield at that seeding rate.  
 ```{r yield at optimum SR}
-
-
+predict(mod4_linp,
+        newdata = data.frame(sr_ksha = 73.47),
+        level = 0
+        )
 ```
 At the optimum seeding rate of **73.47** thousand seeds/ha, corn grain yield was **13.45** Mg/ha.
 
@@ -752,7 +808,17 @@ ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
   geom_point(size = 4, alpha = .6)+
   geom_line(data = nd, aes(y = mod4_yield_mgha), 
             color = "orange",
-            size = 1.5) 
+            size = 1.5) +
+  geom_segment(x = 73.47, 
+               xend = 73.47,
+               y = 13.45,
+               yend = 0
+               )+
+  geom_segment(x = 0, 
+               xend = 73.47,
+               y = 13.45,
+               yend = 13.45
+               )
 
 ```
 # 9) Take-home  
@@ -764,4 +830,49 @@ ggplot(reg_dfw, aes(x = sr_ksha, y = yield_mgha))+
 -   Always check residuals! p-values alone do not tell you whether model is adequate for your data!
 
 
+# 10) Extra - bootstrapping
+
+```{r}
+library(infer)
+
+boot <- reg_dfw %>% 
+  specify(response = yield_mgha) %>% 
+  generate(reps = 10000,
+           type = "bootstrap"
+           )
+
+boot %>% 
+  filter(replicate == 1) %>% 
+  arrange(yield_mgha)
+```
+
+```{r}
+boot_mean <- boot %>% 
+  calculate(stat = "mean")
+
+boot_mean
+```
+
+```{r}
+boot_ci <- boot_mean %>% 
+  summarise(
+    lower = quantile(stat, 0.025),
+    upper = quantile(stat, 0.975)
+  ) %>% 
+  pivot_longer(cols = everything()
+               )
+
+boot_ci
+```
+```{r}
+ggplot(data = boot_mean,
+       aes(x = stat)
+       ) +
+  geom_density()+
+  geom_rug()+
+  geom_vline(data = boot_ci,
+             aes(xintercept = value)
+             )
+  
+```
 
